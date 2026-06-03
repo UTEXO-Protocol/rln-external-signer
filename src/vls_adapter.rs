@@ -343,7 +343,10 @@ fn expanded_keys_from_inbound_key_hex(
     })
 }
 
-fn calculate_absolute_expiry_local(highest_seen_timestamp: u64, invoice_expiry_delta_secs: u32) -> u64 {
+fn calculate_absolute_expiry_local(
+    highest_seen_timestamp: u64,
+    invoice_expiry_delta_secs: u32,
+) -> u64 {
     highest_seen_timestamp + invoice_expiry_delta_secs as u64 + 7200
 }
 
@@ -438,16 +441,18 @@ fn derive_ldk_payment_preimage_local(
     let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
     hmac.input(iv_bytes);
     hmac.input(metadata_bytes);
-    let decoded_payment_preimage = bitcoin::hashes::hmac::Hmac::<Sha256>::from_engine(hmac).to_byte_array();
-    if !fixed_time_eq(&payment_hash, &Sha256::hash(&decoded_payment_preimage).to_byte_array()) {
+    let decoded_payment_preimage =
+        bitcoin::hashes::hmac::Hmac::<Sha256>::from_engine(hmac).to_byte_array();
+    if !fixed_time_eq(
+        &payment_hash,
+        &Sha256::hash(&decoded_payment_preimage).to_byte_array(),
+    ) {
         return Err(decoded_payment_preimage);
     }
     Ok(decoded_payment_preimage)
 }
 
-fn min_final_cltv_expiry_delta_from_metadata_local(
-    bytes: [u8; INBOUND_METADATA_LEN],
-) -> u16 {
+fn min_final_cltv_expiry_delta_from_metadata_local(bytes: [u8; INBOUND_METADATA_LEN]) -> u16 {
     let expiry_bytes = &bytes[INBOUND_AMT_MSAT_LEN..];
     u16::from_be_bytes([expiry_bytes[0], expiry_bytes[1]])
 }
@@ -571,14 +576,12 @@ fn verify_inbound_payment_local(
             }
             None
         }
-        InboundMethod::LdkPaymentHash | InboundMethod::LdkPaymentHashCustomFinalCltv => {
-            Some(
-                derive_ldk_payment_preimage_local(payment_hash, &iv_bytes, &metadata_bytes, keys)
-                    .map_err(|_| {
-                        VlsAdapterError::Protocol("verify inbound payment failed".to_string())
-                    })?,
-            )
-        }
+        InboundMethod::LdkPaymentHash | InboundMethod::LdkPaymentHashCustomFinalCltv => Some(
+            derive_ldk_payment_preimage_local(payment_hash, &iv_bytes, &metadata_bytes, keys)
+                .map_err(|_| {
+                    VlsAdapterError::Protocol("verify inbound payment failed".to_string())
+                })?,
+        ),
         InboundMethod::SpontaneousPayment => {
             let mut hmac = HmacEngine::<Sha256>::new(&keys.spontaneous_pmt_key);
             hmac.input(&metadata_bytes);
@@ -619,17 +622,14 @@ fn get_payment_preimage_local(
     payment_secret: [u8; 32],
 ) -> Result<[u8; 32], VlsAdapterError> {
     let (iv_bytes, metadata_bytes) = decrypt_metadata_local(payment_secret, keys);
-    match InboundMethod::from_bits((metadata_bytes[0] & 0b1110_0000) >> INBOUND_METHOD_TYPE_OFFSET)? {
+    match InboundMethod::from_bits((metadata_bytes[0] & 0b1110_0000) >> INBOUND_METHOD_TYPE_OFFSET)?
+    {
         InboundMethod::LdkPaymentHash | InboundMethod::LdkPaymentHashCustomFinalCltv => {
             derive_ldk_payment_preimage_local(payment_hash, &iv_bytes, &metadata_bytes, keys)
-                .map_err(|_| {
-                    VlsAdapterError::Protocol("get payment preimage failed".to_string())
-                })
+                .map_err(|_| VlsAdapterError::Protocol("get payment preimage failed".to_string()))
         }
         InboundMethod::UserPaymentHash | InboundMethod::UserPaymentHashCustomFinalCltv => Err(
-            VlsAdapterError::Protocol(
-                "expected LdkPaymentHash, got UserPaymentHash".to_string(),
-            ),
+            VlsAdapterError::Protocol("expected LdkPaymentHash, got UserPaymentHash".to_string()),
         ),
         InboundMethod::SpontaneousPayment => Err(VlsAdapterError::Protocol(
             "can't extract payment preimage for spontaneous payments".to_string(),
@@ -640,8 +640,9 @@ fn get_payment_preimage_local(
 fn derive_ldk_auxiliary_keys_hex_from_seed(
     seed: &[u8; 32],
 ) -> Result<(String, String, String), VlsAdapterError> {
-    let (a, b, c) = crate::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(seed)
-        .map_err(|e| VlsAdapterError::Protocol(format!("derive LDK auxiliary keys: {e}")))?;
+    let (a, b, c) =
+        crate::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(seed)
+            .map_err(|e| VlsAdapterError::Protocol(format!("derive LDK auxiliary keys: {e}")))?;
     Ok((hex::encode(a), hex::encode(b), hex::encode(c)))
 }
 
@@ -668,7 +669,9 @@ fn derive_async_payments_hashes_from_seed(
     }
     let last_index = start_index
         .checked_add(batch_size as u64 - 1)
-        .ok_or_else(|| VlsAdapterError::Protocol("invalid async payments hash batch".to_string()))?;
+        .ok_or_else(|| {
+            VlsAdapterError::Protocol("invalid async payments hash batch".to_string())
+        })?;
     if last_index > ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX as u64 {
         return Err(VlsAdapterError::Protocol(
             "invalid async payments hash batch".to_string(),
@@ -682,8 +685,9 @@ fn derive_async_payments_hashes_from_seed(
     .map_err(|e| VlsAdapterError::Protocol(format!("invalid host_node_id pubkey: {e}")))?;
 
     let secp = bitcoin::secp256k1::Secp256k1::new();
-    let mut account_xprv = Xpriv::new_master(network, seed)
-        .map_err(|e| VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}")))?;
+    let mut account_xprv = Xpriv::new_master(network, seed).map_err(|e| {
+        VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
+    })?;
     let h31 = u32::from_be_bytes(
         bitcoin::hashes::sha256::Hash::hash(&host_node_id.serialize()).to_byte_array()[0..4]
             .try_into()
@@ -700,7 +704,9 @@ fn derive_async_payments_hashes_from_seed(
     ]);
     account_xprv = account_xprv
         .derive_priv(&secp, &account_path)
-        .map_err(|e| VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}")))?;
+        .map_err(|e| {
+            VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
+        })?;
 
     let mut hashes = Vec::with_capacity(batch_size as usize);
     for hash_index in start_index..=last_index {
@@ -711,7 +717,9 @@ fn derive_async_payments_hashes_from_seed(
                     index: hash_index as u32,
                 }]),
             )
-            .map_err(|e| VlsAdapterError::Protocol(format!("async payment child derivation failed: {e}")))?;
+            .map_err(|e| {
+                VlsAdapterError::Protocol(format!("async payment child derivation failed: {e}"))
+            })?;
         let child_secret = child_xprv.private_key.secret_bytes();
         let mut preimage_material =
             Vec::with_capacity(ASYNC_PAYMENTS_PREIMAGE_DOMAIN.len() + child_secret.len());
@@ -719,8 +727,7 @@ fn derive_async_payments_hashes_from_seed(
         preimage_material.extend_from_slice(&child_secret);
         let payment_preimage =
             bitcoin::hashes::sha256::Hash::hash(&preimage_material).to_byte_array();
-        let payment_hash =
-            bitcoin::hashes::sha256::Hash::hash(&payment_preimage).to_byte_array();
+        let payment_hash = bitcoin::hashes::sha256::Hash::hash(&payment_preimage).to_byte_array();
         hashes.push(AsyncPaymentsHashEntry {
             hash_index,
             payment_hash_hex: hex::encode(payment_hash),
@@ -745,7 +752,12 @@ fn derive_ldk_destination_script_hex_from_seed(
 
     let secp = Secp256k1::new();
     let starting_time_factory = ClockStartingTimeFactory {};
-    let manager = MyKeysManager::new(KeyDerivationStyle::Ldk, seed, network, &starting_time_factory);
+    let manager = MyKeysManager::new(
+        KeyDerivationStyle::Ldk,
+        seed,
+        network,
+        &starting_time_factory,
+    );
     let account_extended_key = manager.get_account_extended_key().clone();
     let destination_key = account_extended_key
         .derive_priv(&secp, &[DESTINATION_SCRIPT_INDEX])
@@ -773,11 +785,18 @@ fn derive_ldk_shutdown_script_hex_from_seed(
     use lightning_signer::signer::{my_keys_manager::MyKeysManager, ClockStartingTimeFactory};
 
     let starting_time_factory = ClockStartingTimeFactory {};
-    let manager = MyKeysManager::new(KeyDerivationStyle::Ldk, seed, network, &starting_time_factory);
+    let manager = MyKeysManager::new(
+        KeyDerivationStyle::Ldk,
+        seed,
+        network,
+        &starting_time_factory,
+    );
     Ok(hex::encode(
         manager
             .get_shutdown_scriptpubkey()
-            .map_err(|_| VlsAdapterError::Protocol("get shutdown script from MyKeysManager".into()))?
+            .map_err(|_| {
+                VlsAdapterError::Protocol("get shutdown script from MyKeysManager".into())
+            })?
             .into_inner()
             .as_bytes(),
     ))
@@ -1354,6 +1373,46 @@ pub mod vls_real {
             Ok(())
         }
 
+        pub(super) fn finalize_signed_rgb_psbt_inputs(psbt: &mut Psbt) {
+            for input in &mut psbt.inputs {
+                if input.final_script_witness.is_some() {
+                    continue;
+                }
+                if let Some(sig) = input.tap_key_sig {
+                    let mut witness = bitcoin::Witness::new();
+                    witness.push(sig.to_vec());
+                    input.final_script_witness = Some(witness);
+                    input.partial_sigs.clear();
+                    input.sighash_type = None;
+                    input.redeem_script = None;
+                    input.witness_script = None;
+                    input.bip32_derivation.clear();
+                    input.tap_script_sigs.clear();
+                    input.tap_key_origins.clear();
+                    input.tap_internal_key = None;
+                    input.tap_merkle_root = None;
+                    continue;
+                }
+                if input
+                    .witness_utxo
+                    .as_ref()
+                    .is_some_and(|txout| txout.script_pubkey.is_p2wpkh())
+                {
+                    if let Some((pubkey, sig)) = input.partial_sigs.iter().next() {
+                        let mut witness = bitcoin::Witness::new();
+                        witness.push(sig.serialize());
+                        witness.push(pubkey.to_bytes());
+                        input.final_script_witness = Some(witness);
+                        input.partial_sigs.clear();
+                        input.sighash_type = None;
+                        input.redeem_script = None;
+                        input.witness_script = None;
+                        input.bip32_derivation.clear();
+                    }
+                }
+            }
+        }
+
         fn utxos_from_psbt(&self, psbt: &Psbt) -> Result<Vec<Utxo>, VlsAdapterError> {
             let mut utxos = Vec::with_capacity(psbt.inputs.len());
             for (idx, input) in psbt.inputs.iter().enumerate() {
@@ -1415,21 +1474,19 @@ pub mod vls_real {
             script: &bitcoin::ScriptBuf,
         ) -> Result<Option<u32>, VlsAdapterError> {
             let destination_script_hex = self.node_get_destination_script(String::new())?;
-            let destination_script = ScriptBuf::from_bytes(
-                hex::decode(destination_script_hex).map_err(|e| {
+            let destination_script =
+                ScriptBuf::from_bytes(hex::decode(destination_script_hex).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid destination script hex: {e}"))
-                })?,
-            );
+                })?);
             if *script == destination_script {
                 return Ok(Some(1));
             }
 
             let shutdown_script_hex = self.node_get_shutdown_scriptpubkey()?;
-            let shutdown_script = ScriptBuf::from_bytes(
-                hex::decode(shutdown_script_hex).map_err(|e| {
+            let shutdown_script =
+                ScriptBuf::from_bytes(hex::decode(shutdown_script_hex).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid shutdown script hex: {e}"))
-                })?,
-            );
+                })?);
             if *script == shutdown_script {
                 return Ok(Some(2));
             }
@@ -1636,17 +1693,15 @@ pub mod vls_real {
             max_index: u32,
         ) -> Result<Vec<DerivedAddressMatch>, VlsAdapterError> {
             let destination_script_hex = self.node_get_destination_script(String::new())?;
-            let destination_script = ScriptBuf::from_bytes(
-                hex::decode(destination_script_hex).map_err(|e| {
+            let destination_script =
+                ScriptBuf::from_bytes(hex::decode(destination_script_hex).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid destination script hex: {e}"))
-                })?,
-            );
+                })?);
             let shutdown_script_hex = self.node_get_shutdown_scriptpubkey()?;
-            let shutdown_script = ScriptBuf::from_bytes(
-                hex::decode(shutdown_script_hex).map_err(|e| {
+            let shutdown_script =
+                ScriptBuf::from_bytes(hex::decode(shutdown_script_hex).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid shutdown script hex: {e}"))
-                })?,
-            );
+                })?);
             let mut out = Vec::new();
             if *script == destination_script {
                 out.push(DerivedAddressMatch {
@@ -1819,7 +1874,6 @@ pub mod vls_real {
                 htlc_basepoint_hex: hex::encode(reply.basepoints.htlc.0),
             })
         }
-
     }
 
     impl VlsClient for RealVlsClient {
@@ -1920,11 +1974,7 @@ pub mod vls_real {
                 )
             })?;
             let (_, peer_storage_key, _) = derive_ldk_auxiliary_keys_hex_from_seed(&seed)?;
-            encrypt_peer_storage_payload_local(
-                &peer_storage_key,
-                plaintext_hex,
-                random_bytes_hex,
-            )
+            encrypt_peer_storage_payload_local(&peer_storage_key, plaintext_hex, random_bytes_hex)
         }
 
         fn node_decrypt_peer_storage_payload(
@@ -2008,9 +2058,8 @@ pub mod vls_real {
             })?;
             let (inbound, _, _) = derive_ldk_auxiliary_keys_hex_from_seed(&seed)?;
             let expanded = expanded_keys_from_inbound_key_hex(&inbound)?;
-            let random_bytes = hex::decode(random_bytes_hex).map_err(|e| {
-                VlsAdapterError::Protocol(format!("invalid random_bytes_hex: {e}"))
-            })?;
+            let random_bytes = hex::decode(random_bytes_hex)
+                .map_err(|e| VlsAdapterError::Protocol(format!("invalid random_bytes_hex: {e}")))?;
             let random_bytes: [u8; 32] = random_bytes.try_into().map_err(|_| {
                 VlsAdapterError::Protocol("random_bytes_hex must decode to 32 bytes".to_string())
             })?;
@@ -2040,9 +2089,8 @@ pub mod vls_real {
             })?;
             let (inbound, _, _) = derive_ldk_auxiliary_keys_hex_from_seed(&seed)?;
             let expanded = expanded_keys_from_inbound_key_hex(&inbound)?;
-            let payment_hash = hex::decode(payment_hash_hex).map_err(|e| {
-                VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}"))
-            })?;
+            let payment_hash = hex::decode(payment_hash_hex)
+                .map_err(|e| VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}")))?;
             let payment_hash: [u8; 32] = payment_hash.try_into().map_err(|_| {
                 VlsAdapterError::Protocol("payment_hash_hex must decode to 32 bytes".to_string())
             })?;
@@ -2095,9 +2143,8 @@ pub mod vls_real {
             })?;
             let (inbound, _, _) = derive_ldk_auxiliary_keys_hex_from_seed(&seed)?;
             let expanded = expanded_keys_from_inbound_key_hex(&inbound)?;
-            let payment_hash = hex::decode(payment_hash_hex).map_err(|e| {
-                VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}"))
-            })?;
+            let payment_hash = hex::decode(payment_hash_hex)
+                .map_err(|e| VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}")))?;
             let payment_hash: [u8; 32] = payment_hash.try_into().map_err(|_| {
                 VlsAdapterError::Protocol("payment_hash_hex must decode to 32 bytes".to_string())
             })?;
@@ -2105,9 +2152,7 @@ pub mod vls_real {
                 VlsAdapterError::Protocol(format!("invalid payment_secret_hex: {e}"))
             })?;
             let payment_secret: [u8; 32] = payment_secret.try_into().map_err(|_| {
-                VlsAdapterError::Protocol(
-                    "payment_secret_hex must decode to 32 bytes".to_string(),
-                )
+                VlsAdapterError::Protocol("payment_secret_hex must decode to 32 bytes".to_string())
             })?;
             let (preimage, min_final_cltv_expiry_delta) = verify_inbound_payment_local(
                 &expanded,
@@ -2131,9 +2176,8 @@ pub mod vls_real {
             })?;
             let (inbound, _, _) = derive_ldk_auxiliary_keys_hex_from_seed(&seed)?;
             let expanded = expanded_keys_from_inbound_key_hex(&inbound)?;
-            let payment_hash = hex::decode(payment_hash_hex).map_err(|e| {
-                VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}"))
-            })?;
+            let payment_hash = hex::decode(payment_hash_hex)
+                .map_err(|e| VlsAdapterError::Protocol(format!("invalid payment_hash_hex: {e}")))?;
             let payment_hash: [u8; 32] = payment_hash.try_into().map_err(|_| {
                 VlsAdapterError::Protocol("payment_hash_hex must decode to 32 bytes".to_string())
             })?;
@@ -2141,9 +2185,7 @@ pub mod vls_real {
                 VlsAdapterError::Protocol(format!("invalid payment_secret_hex: {e}"))
             })?;
             let payment_secret: [u8; 32] = payment_secret.try_into().map_err(|_| {
-                VlsAdapterError::Protocol(
-                    "payment_secret_hex must decode to 32 bytes".to_string(),
-                )
+                VlsAdapterError::Protocol("payment_secret_hex must decode to 32 bytes".to_string())
             })?;
             let preimage = get_payment_preimage_local(&expanded, payment_hash, payment_secret)?;
             Ok(hex::encode(preimage))
@@ -2838,18 +2880,15 @@ pub mod vls_real {
                         ))
                     })?;
                     let holder_shutdown_script_hex = self.node_get_shutdown_scriptpubkey()?;
-                    let holder_shutdown_script_bytes =
-                        hex::decode(holder_shutdown_script_hex).map_err(|e| {
+                    let holder_shutdown_script_bytes = hex::decode(holder_shutdown_script_hex)
+                        .map_err(|e| {
                             VlsAdapterError::Protocol(format!(
                                 "sign_closing_transaction:invalid_shutdown_script_hex: {e}"
                             ))
                         })?;
                     let holder_shutdown_script =
                         ScriptBuf::from_bytes(holder_shutdown_script_bytes);
-                    Self::attach_mutual_close_output_paths(
-                        &mut psbt,
-                        &holder_shutdown_script,
-                    )?;
+                    Self::attach_mutual_close_output_paths(&mut psbt, &holder_shutdown_script)?;
 
                     let reply: SignTxReply = call(
                         dbid,
@@ -2964,25 +3003,7 @@ pub mod vls_real {
                 let master = Self::rgb_master_xpriv(&seed, network)?;
                 match psbt_obj.sign(&master, &secp) {
                     Ok(_) => {
-                        for input in &mut psbt_obj.inputs {
-                            if input.final_script_witness.is_some() {
-                                continue;
-                            }
-                            if let Some(sig) = input.tap_key_sig {
-                                let mut witness = bitcoin::Witness::new();
-                                witness.push(sig.to_vec());
-                                input.final_script_witness = Some(witness);
-                                input.partial_sigs.clear();
-                                input.sighash_type = None;
-                                input.redeem_script = None;
-                                input.witness_script = None;
-                                input.bip32_derivation.clear();
-                                input.tap_script_sigs.clear();
-                                input.tap_key_origins.clear();
-                                input.tap_internal_key = None;
-                                input.tap_merkle_root = None;
-                            }
-                        }
+                        Self::finalize_signed_rgb_psbt_inputs(&mut psbt_obj);
                         return Ok(
                             base64::engine::general_purpose::STANDARD.encode(psbt_obj.serialize())
                         );
@@ -3207,7 +3228,9 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                     .client
                     .node_decrypt_peer_storage_payload(ciphertext_hex)
                     .map(|bytes_hex| {
-                        SignerResponse::Node(NodeResponse::DecryptedPeerStoragePayload { bytes_hex })
+                        SignerResponse::Node(NodeResponse::DecryptedPeerStoragePayload {
+                            bytes_hex,
+                        })
                     })
                     .map_err(Into::into),
                 NodeRequest::EncryptBlindedMessagePayload {
@@ -3238,10 +3261,15 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                     .node_get_hmac_for_offer_key()
                     .map(|key_hex| SignerResponse::Node(NodeResponse::HmacForOfferKey { key_hex }))
                     .map_err(Into::into),
-                NodeRequest::CryptForOffer { bytes_hex, nonce_hex } => self
+                NodeRequest::CryptForOffer {
+                    bytes_hex,
+                    nonce_hex,
+                } => self
                     .client
                     .node_crypt_for_offer(bytes_hex, nonce_hex)
-                    .map(|bytes_hex| SignerResponse::Node(NodeResponse::CryptForOffer { bytes_hex }))
+                    .map(|bytes_hex| {
+                        SignerResponse::Node(NodeResponse::CryptForOffer { bytes_hex })
+                    })
                     .map_err(Into::into),
                 NodeRequest::CreateInboundPayment {
                     min_value_msat,
@@ -3281,9 +3309,7 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                         min_final_cltv_expiry_delta,
                     )
                     .map(|payment_secret_hex| {
-                        SignerResponse::Node(NodeResponse::PaymentSecret {
-                            payment_secret_hex,
-                        })
+                        SignerResponse::Node(NodeResponse::PaymentSecret { payment_secret_hex })
                     })
                     .map_err(Into::into),
                 NodeRequest::CreateSpontaneousPaymentSecret {
@@ -3300,9 +3326,7 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                         min_final_cltv_expiry_delta,
                     )
                     .map(|payment_secret_hex| {
-                        SignerResponse::Node(NodeResponse::PaymentSecret {
-                            payment_secret_hex,
-                        })
+                        SignerResponse::Node(NodeResponse::PaymentSecret { payment_secret_hex })
                     })
                     .map_err(Into::into),
                 NodeRequest::VerifyInboundPayment {
@@ -3343,11 +3367,7 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                     batch_size,
                 } => self
                     .client
-                    .node_prepare_async_payments_hashes(
-                        host_node_id_hex,
-                        start_index,
-                        batch_size,
-                    )
+                    .node_prepare_async_payments_hashes(host_node_id_hex, start_index, batch_size)
                     .map(|hashes| {
                         SignerResponse::Node(NodeResponse::AsyncPaymentsHashes { hashes })
                     })
@@ -3540,11 +3560,7 @@ mod tests {
             random_bytes_hex: String,
         ) -> Result<String, VlsAdapterError> {
             let (_, peer_storage_key, _) = derive_ldk_auxiliary_keys_hex_from_seed(&[9u8; 32])?;
-            encrypt_peer_storage_payload_local(
-                &peer_storage_key,
-                plaintext_hex,
-                random_bytes_hex,
-            )
+            encrypt_peer_storage_payload_local(&peer_storage_key, plaintext_hex, random_bytes_hex)
         }
 
         fn node_decrypt_peer_storage_payload(
@@ -3760,6 +3776,70 @@ mod tests {
         ) -> Result<Vec<DerivedAddressMatch>, VlsAdapterError> {
             Ok(Vec::new())
         }
+    }
+
+    #[cfg(feature = "with-vls")]
+    #[test]
+    fn finalizes_p2wpkh_partial_sig_inputs() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::ecdsa;
+        use bitcoin::psbt::Psbt;
+        use bitcoin::secp256k1::{Message, Secp256k1, SecretKey};
+        use bitcoin::transaction::Version;
+        use bitcoin::{
+            Address, Amount, CompressedPublicKey, Network, OutPoint, PublicKey, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Witness,
+        };
+
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[42; 32]).expect("secret key");
+        let secp_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let pubkey = PublicKey::new(secp_pubkey);
+        let compressed_pubkey =
+            CompressedPublicKey::from_slice(&secp_pubkey.serialize()).expect("compressed");
+        let script_pubkey = Address::p2wpkh(&compressed_pubkey, Network::Regtest).script_pubkey();
+
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("psbt");
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: Amount::from_sat(2_000),
+            script_pubkey,
+        });
+        let message = Message::from_digest([7; 32]);
+        let sig = secp.sign_ecdsa(&message, &secret_key);
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(pubkey, ecdsa::Signature::sighash_all(sig));
+
+        let unfinalized_tx = psbt
+            .clone()
+            .extract_tx()
+            .expect("extract without final witness");
+        assert!(unfinalized_tx.input[0].witness.is_empty());
+
+        vls_real::RealVlsClient::finalize_signed_rgb_psbt_inputs(&mut psbt);
+
+        let witness = psbt.inputs[0]
+            .final_script_witness
+            .as_ref()
+            .expect("final witness");
+        assert_eq!(witness.len(), 2);
+        assert!(psbt.inputs[0].partial_sigs.is_empty());
+        let finalized_tx = psbt.extract_tx().expect("finalized tx");
+        assert_eq!(finalized_tx.input[0].witness.len(), 2);
     }
 
     #[test]
