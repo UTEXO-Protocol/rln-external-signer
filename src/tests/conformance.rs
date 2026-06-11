@@ -45,6 +45,26 @@ mod tests {
     }
 
     #[test]
+    fn node_sign_message_raw_returns_recoverable_signature() {
+        let signer = make_signer();
+        let res = signer
+            .call(SignerRequest::Node(NodeRequest::SignMessageRaw {
+                message_hex: "00ff".to_string(),
+            }))
+            .expect("sign raw message");
+        match res {
+            SignerResponse::Node(NodeResponse::RecoverableSignature {
+                signature_hex,
+                recovery_id,
+            }) => {
+                assert_eq!(signature_hex, "11".repeat(64));
+                assert_eq!(recovery_id, 1);
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
     fn channel_generate_keys_id_returns_data() {
         let signer = make_signer();
         let res = signer

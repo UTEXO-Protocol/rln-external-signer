@@ -901,6 +901,8 @@ pub trait VlsClient: Send + Sync {
 
     fn node_sign_message(&self, message: String) -> Result<String, VlsAdapterError>;
 
+    fn node_sign_message_raw(&self, message_hex: String) -> Result<(String, u8), VlsAdapterError>;
+
     fn channel_generate_keys_id(
         &self,
         inbound: bool,
@@ -1005,6 +1007,16 @@ pub mod vls_real {
         channel_value_satoshis: u64,
         channel_keys_id_hex: String,
         channel_pubkeys: ChannelPublicKeys,
+    }
+
+    fn split_recoverable_signature(sig: &[u8], op: &str) -> Result<(String, u8), VlsAdapterError> {
+        if sig.len() != 65 {
+            return Err(VlsAdapterError::Protocol(format!(
+                "{op} returned {}-byte recoverable signature, expected 65",
+                sig.len()
+            )));
+        }
+        Ok((hex::encode(&sig[..64]), sig[64]))
     }
 
     fn to_bitcoin_sig(sig_hex: &str) -> Result<BitcoinSignature, VlsAdapterError> {
@@ -2266,8 +2278,7 @@ pub mod vls_real {
                 },
             )
             .map_err(|e| VlsAdapterError::Transport(format!("sign_invoice failed: {e:?}")))?;
-            let sig = reply.signature.0;
-            Ok((hex::encode(&sig[..64]), sig[64]))
+            split_recoverable_signature(&reply.signature.0, "sign_invoice")
         }
 
         fn node_sign_bolt12_invoice(&self, _invoice: String) -> Result<String, VlsAdapterError> {
@@ -2301,6 +2312,22 @@ pub mod vls_real {
             )
             .map_err(|e| VlsAdapterError::Transport(format!("sign_message failed: {e:?}")))?;
             Ok(hex::encode(reply.signature.0))
+        }
+
+        fn node_sign_message_raw(
+            &self,
+            message_hex: String,
+        ) -> Result<(String, u8), VlsAdapterError> {
+            let message = hex::decode(message_hex)
+                .map_err(|e| VlsAdapterError::Protocol(format!("invalid message hex: {e}")))?;
+            let reply: SignMessageReply = node_call(
+                &*self.transport,
+                SignMessage {
+                    message: Octets(message),
+                },
+            )
+            .map_err(|e| VlsAdapterError::Transport(format!("sign_message_raw failed: {e:?}")))?;
+            split_recoverable_signature(&reply.signature.0, "sign_message_raw")
         }
 
         fn channel_generate_keys_id(
@@ -3418,6 +3445,17 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                         SignerResponse::Node(NodeResponse::Signature { signature_hex })
                     })
                     .map_err(Into::into),
+
+                NodeRequest::SignMessageRaw { message_hex } => self
+                    .client
+                    .node_sign_message_raw(message_hex)
+                    .map(|(signature_hex, recovery_id)| {
+                        SignerResponse::Node(NodeResponse::RecoverableSignature {
+                            signature_hex,
+                            recovery_id,
+                        })
+                    })
+                    .map_err(Into::into),
             },
 
             SignerRequest::Channel(channel_req) => match channel_req {
@@ -3698,6 +3736,13 @@ mod tests {
             Ok(format!("msg:{message}"))
         }
 
+        fn node_sign_message_raw(
+            &self,
+            message_hex: String,
+        ) -> Result<(String, u8), VlsAdapterError> {
+            Ok((format!("raw:{message_hex}"), 2))
+        }
+
         fn channel_generate_keys_id(
             &self,
             inbound: bool,
@@ -3863,6 +3908,26 @@ mod tests {
         match res {
             SignerResponse::Node(NodeResponse::Signature { signature_hex }) => {
                 assert_eq!(signature_hex, "msg:hello")
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn maps_node_sign_message_raw() {
+        let adapter = VlsSignerAdapter::new(FakeClient);
+        let res = adapter
+            .call(SignerRequest::Node(NodeRequest::SignMessageRaw {
+                message_hex: "00ff".to_string(),
+            }))
+            .expect("sign");
+        match res {
+            SignerResponse::Node(NodeResponse::RecoverableSignature {
+                signature_hex,
+                recovery_id,
+            }) => {
+                assert_eq!(signature_hex, "raw:00ff");
+                assert_eq!(recovery_id, 2);
             }
             _ => panic!("unexpected response"),
         }

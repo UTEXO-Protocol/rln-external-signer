@@ -172,6 +172,12 @@ impl ExternalSignerBackend for InMemorySigner {
                         signature_hex: Self::fake_sig(&message),
                     }))
                 }
+                NodeRequest::SignMessageRaw { .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::RecoverableSignature {
+                        signature_hex: "11".repeat(64),
+                        recovery_id: 1,
+                    }))
+                }
                 NodeRequest::SignGossipMessage { message_hex } => {
                     Ok(SignerResponse::Node(NodeResponse::Signature {
                         signature_hex: Self::fake_sig(&message_hex),

@@ -214,6 +214,9 @@ pub enum NodeRequest {
     SignMessage {
         message: String,
     },
+    SignMessageRaw {
+        message_hex: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
