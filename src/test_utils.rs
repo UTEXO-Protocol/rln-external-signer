@@ -1,7 +1,7 @@
 use crate::contract::{
     AsyncPaymentsHashEntry, BootstrapData, ChannelPublicKeys, ChannelRequest, ChannelResponse,
-    ExternalSignerBackend, NodeRequest, NodeResponse, SignerError, SignerIdentity,
-    SignerRequest, SignerResponse,
+    ExternalSignerBackend, NodeRequest, NodeResponse, SignerError, SignerIdentity, SignerRequest,
+    SignerResponse,
 };
 use crate::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes;
 use bitcoin::hashes::{sha256, Hash as _};
@@ -41,13 +41,11 @@ fn testkit_ldk_aux_hexes() -> (String, String, String) {
 impl ExternalSignerBackend for InMemorySigner {
     fn call(&self, req: SignerRequest) -> Result<SignerResponse, SignerError> {
         match req {
-            SignerRequest::Bootstrap => {
-                Ok(SignerResponse::Bootstrap(BootstrapData {
-                    identity: self.identity.clone(),
-                    protocol_version: "v1-testkit".to_string(),
-                    api_level: 1,
-                }))
-            }
+            SignerRequest::Bootstrap => Ok(SignerResponse::Bootstrap(BootstrapData {
+                identity: self.identity.clone(),
+                protocol_version: "v1-testkit".to_string(),
+                api_level: 1,
+            })),
             SignerRequest::Node(node_req) => match node_req {
                 NodeRequest::GetNodeId { .. } => Ok(SignerResponse::Node(NodeResponse::NodeId {
                     node_id_hex: self.identity.node_id.clone(),
@@ -111,19 +109,26 @@ impl ExternalSignerBackend for InMemorySigner {
                         )
                         .map_err(SignerError::from)?;
                     Ok(SignerResponse::Node(
-                        NodeResponse::DecryptedBlindedMessagePayload { bytes_hex, used_aad },
+                        NodeResponse::DecryptedBlindedMessagePayload {
+                            bytes_hex,
+                            used_aad,
+                        },
                     ))
                 }
                 NodeRequest::GetHmacForOfferKey => {
                     let (ldk_inbound_payment_key_hex, _, _) = testkit_ldk_aux_hexes();
-                    let (offers_base_key, _) =
-                        crate::vls_adapter::offer_keys_from_inbound_key_hex(&ldk_inbound_payment_key_hex)
-                            .map_err(SignerError::from)?;
+                    let (offers_base_key, _) = crate::vls_adapter::offer_keys_from_inbound_key_hex(
+                        &ldk_inbound_payment_key_hex,
+                    )
+                    .map_err(SignerError::from)?;
                     Ok(SignerResponse::Node(NodeResponse::HmacForOfferKey {
                         key_hex: hex::encode(offers_base_key),
                     }))
                 }
-                NodeRequest::CryptForOffer { bytes_hex, nonce_hex } => {
+                NodeRequest::CryptForOffer {
+                    bytes_hex,
+                    nonce_hex,
+                } => {
                     let (ldk_inbound_payment_key_hex, _, _) = testkit_ldk_aux_hexes();
                     let bytes_hex = crate::vls_adapter::crypt_for_offer_local(
                         &ldk_inbound_payment_key_hex,
@@ -131,7 +136,9 @@ impl ExternalSignerBackend for InMemorySigner {
                         nonce_hex,
                     )
                     .map_err(SignerError::from)?;
-                    Ok(SignerResponse::Node(NodeResponse::CryptForOffer { bytes_hex }))
+                    Ok(SignerResponse::Node(NodeResponse::CryptForOffer {
+                        bytes_hex,
+                    }))
                 }
                 NodeRequest::PrepareAsyncPaymentsHashes {
                     start_index,
@@ -150,34 +157,36 @@ impl ExternalSignerBackend for InMemorySigner {
                         })
                         .collect(),
                 })),
-                NodeRequest::GetAsyncPaymentPreimage { hash_index, .. } => Ok(SignerResponse::Node(
-                    NodeResponse::PaymentPreimage {
-                        payment_preimage_hex: hex::encode(Self::fake_async_payment_preimage(hash_index)),
-                    },
-                )),
-                NodeRequest::CreateInboundPayment { .. } => Ok(SignerResponse::Node(
-                    NodeResponse::PaymentHashAndSecret {
+                NodeRequest::GetAsyncPaymentPreimage { hash_index, .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::PaymentPreimage {
+                        payment_preimage_hex: hex::encode(Self::fake_async_payment_preimage(
+                            hash_index,
+                        )),
+                    }))
+                }
+                NodeRequest::CreateInboundPayment { .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::PaymentHashAndSecret {
                         payment_hash_hex: "11".repeat(32),
                         payment_secret_hex: "22".repeat(32),
-                    },
-                )),
+                    }))
+                }
                 NodeRequest::CreateInboundPaymentForHash { .. }
-                | NodeRequest::CreateSpontaneousPaymentSecret { .. } => Ok(
-                    SignerResponse::Node(NodeResponse::PaymentSecret {
+                | NodeRequest::CreateSpontaneousPaymentSecret { .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::PaymentSecret {
                         payment_secret_hex: "22".repeat(32),
-                    }),
-                ),
-                NodeRequest::VerifyInboundPayment { .. } => Ok(SignerResponse::Node(
-                    NodeResponse::VerifyInboundPayment {
+                    }))
+                }
+                NodeRequest::VerifyInboundPayment { .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::VerifyInboundPayment {
                         payment_preimage_hex: Some("33".repeat(32)),
                         min_final_cltv_expiry_delta: Some(18),
-                    },
-                )),
-                NodeRequest::GetPaymentPreimage { .. } => Ok(SignerResponse::Node(
-                    NodeResponse::PaymentPreimage {
+                    }))
+                }
+                NodeRequest::GetPaymentPreimage { .. } => {
+                    Ok(SignerResponse::Node(NodeResponse::PaymentPreimage {
                         payment_preimage_hex: "33".repeat(32),
-                    },
-                )),
+                    }))
+                }
                 NodeRequest::GetDestinationScript { .. } | NodeRequest::GetShutdownScriptpubkey => {
                     Err(SignerError::Unsupported(
                         "destination/shutdown script ops are not implemented in testkit"

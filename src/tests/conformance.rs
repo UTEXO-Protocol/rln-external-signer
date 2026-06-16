@@ -73,11 +73,13 @@ mod tests {
         let host_node_id_hex = "02".to_string();
 
         let hash_res = signer
-            .call(SignerRequest::Node(NodeRequest::PrepareAsyncPaymentsHashes {
-                host_node_id_hex: host_node_id_hex.clone(),
-                start_index: hash_index,
-                batch_size: 1,
-            }))
+            .call(SignerRequest::Node(
+                NodeRequest::PrepareAsyncPaymentsHashes {
+                    host_node_id_hex: host_node_id_hex.clone(),
+                    start_index: hash_index,
+                    batch_size: 1,
+                },
+            ))
             .expect("prepare async hash");
         let payment_hash_hex = match hash_res {
             SignerResponse::Node(NodeResponse::AsyncPaymentsHashes { hashes }) => {
