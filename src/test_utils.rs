@@ -4,6 +4,7 @@ use crate::contract::{
     SignerRequest, SignerResponse,
 };
 use crate::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes;
+use bitcoin::hashes::{sha256, Hash as _};
 
 pub struct InMemorySigner {
     pub identity: SignerIdentity,
@@ -12,6 +13,12 @@ pub struct InMemorySigner {
 impl InMemorySigner {
     fn fake_sig(payload: &str) -> String {
         format!("sig:{payload}")
+    }
+
+    fn fake_async_payment_preimage(hash_index: u64) -> [u8; 32] {
+        let mut preimage = [0u8; 32];
+        preimage[24..].copy_from_slice(&hash_index.to_be_bytes());
+        preimage
     }
 
     fn fixed_pubkeys() -> ChannelPublicKeys {
@@ -132,12 +139,22 @@ impl ExternalSignerBackend for InMemorySigner {
                     ..
                 } => Ok(SignerResponse::Node(NodeResponse::AsyncPaymentsHashes {
                     hashes: (0..batch_size as u64)
-                        .map(|offset| AsyncPaymentsHashEntry {
-                            hash_index: start_index + offset,
-                            payment_hash_hex: format!("{:064x}", start_index + offset),
+                        .map(|offset| {
+                            let hash_index = start_index + offset;
+                            let preimage = Self::fake_async_payment_preimage(hash_index);
+                            let payment_hash = sha256::Hash::hash(&preimage).to_byte_array();
+                            AsyncPaymentsHashEntry {
+                                hash_index,
+                                payment_hash_hex: hex::encode(payment_hash),
+                            }
                         })
                         .collect(),
                 })),
+                NodeRequest::GetAsyncPaymentPreimage { hash_index, .. } => Ok(SignerResponse::Node(
+                    NodeResponse::PaymentPreimage {
+                        payment_preimage_hex: hex::encode(Self::fake_async_payment_preimage(hash_index)),
+                    },
+                )),
                 NodeRequest::CreateInboundPayment { .. } => Ok(SignerResponse::Node(
                     NodeResponse::PaymentHashAndSecret {
                         payment_hash_hex: "11".repeat(32),
