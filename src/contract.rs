@@ -199,6 +199,7 @@ pub enum NodeRequest {
     GetAsyncPaymentPreimage {
         host_node_id_hex: String,
         hash_index: u64,
+        payment_hash_hex: String,
     },
     Ecdh {
         recipient: String,

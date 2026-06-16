@@ -94,6 +94,7 @@ mod tests {
             .call(SignerRequest::Node(NodeRequest::GetAsyncPaymentPreimage {
                 host_node_id_hex,
                 hash_index,
+                payment_hash_hex: payment_hash_hex.clone(),
             }))
             .expect("get async preimage");
         let payment_preimage_hex = match preimage_res {

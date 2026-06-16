@@ -783,6 +783,30 @@ fn derive_async_payment_preimage_from_seed(
     derive_async_payment_preimage_from_account_xprv(&account_xprv, hash_index)
 }
 
+#[cfg(any(feature = "with-vls", test))]
+fn validate_and_parse_payment_preimage(
+    payment_preimage_hex: &str,
+    payment_hash_hex: &str,
+) -> Result<[u8; 32], VlsAdapterError> {
+    let preimage: [u8; 32] = hex::decode(payment_preimage_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| VlsAdapterError::Protocol("invalid async payment preimage".to_string()))?;
+    let payment_hash: [u8; 32] = hex::decode(payment_hash_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| {
+            VlsAdapterError::Protocol("invalid async payment payment_hash".to_string())
+        })?;
+    let computed_hash = bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array();
+    if computed_hash != payment_hash {
+        return Err(VlsAdapterError::Protocol(
+            "async payment preimage hash mismatch".to_string(),
+        ));
+    }
+    Ok(preimage)
+}
+
 #[cfg(feature = "with-vls")]
 fn derive_ldk_destination_script_hex_from_seed(
     seed: &[u8; 32],
@@ -931,6 +955,7 @@ pub trait VlsClient: Send + Sync {
         &self,
         host_node_id_hex: String,
         hash_index: u64,
+        payment_hash_hex: String,
     ) -> Result<String, VlsAdapterError>;
 
     fn node_ecdh(
@@ -2281,6 +2306,7 @@ pub mod vls_real {
             &self,
             host_node_id_hex: String,
             hash_index: u64,
+            payment_hash_hex: String,
         ) -> Result<String, VlsAdapterError> {
             let seed = self.seed.ok_or_else(|| {
                 VlsAdapterError::Protocol(
@@ -2290,13 +2316,14 @@ pub mod vls_real {
             let network = Network::from_str(self.network()).map_err(|e| {
                 VlsAdapterError::Protocol(format!("invalid network in adapter: {e}"))
             })?;
-            let preimage = derive_async_payment_preimage_from_seed(
+            let preimage_hex = hex::encode(derive_async_payment_preimage_from_seed(
                 &seed,
                 network,
                 &host_node_id_hex,
                 hash_index,
-            )?;
-            Ok(hex::encode(preimage))
+            )?);
+            validate_and_parse_payment_preimage(&preimage_hex, &payment_hash_hex)?;
+            Ok(preimage_hex)
         }
 
         fn node_ecdh(
@@ -3475,9 +3502,10 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                 NodeRequest::GetAsyncPaymentPreimage {
                     host_node_id_hex,
                     hash_index,
+                    payment_hash_hex,
                 } => self
                     .client
-                    .node_get_async_payment_preimage(host_node_id_hex, hash_index)
+                    .node_get_async_payment_preimage(host_node_id_hex, hash_index, payment_hash_hex)
                     .map(|payment_preimage_hex| {
                         SignerResponse::Node(NodeResponse::PaymentPreimage {
                             payment_preimage_hex,
@@ -3796,14 +3824,16 @@ mod tests {
             &self,
             host_node_id_hex: String,
             hash_index: u64,
+            payment_hash_hex: String,
         ) -> Result<String, VlsAdapterError> {
-            let preimage = derive_async_payment_preimage_from_seed(
+            let preimage_hex = hex::encode(derive_async_payment_preimage_from_seed(
                 &[9u8; 32],
                 bitcoin::Network::Regtest,
                 &host_node_id_hex,
                 hash_index,
-            )?;
-            Ok(hex::encode(preimage))
+            )?);
+            validate_and_parse_payment_preimage(&preimage_hex, &payment_hash_hex)?;
+            Ok(preimage_hex)
         }
 
         fn node_ecdh(
