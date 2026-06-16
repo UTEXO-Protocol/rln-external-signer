@@ -65,6 +65,51 @@ mod tests {
     }
 
     #[test]
+    fn async_payment_preimage_matches_prepared_hash() {
+        use bitcoin::hashes::{sha256, Hash as _};
+
+        let signer = make_signer();
+        let hash_index = 7;
+        let host_node_id_hex = "02".to_string();
+
+        let hash_res = signer
+            .call(SignerRequest::Node(
+                NodeRequest::PrepareAsyncPaymentsHashes {
+                    host_node_id_hex: host_node_id_hex.clone(),
+                    start_index: hash_index,
+                    batch_size: 1,
+                },
+            ))
+            .expect("prepare async hash");
+        let payment_hash_hex = match hash_res {
+            SignerResponse::Node(NodeResponse::AsyncPaymentsHashes { hashes }) => {
+                assert_eq!(hashes.len(), 1);
+                assert_eq!(hashes[0].hash_index, hash_index);
+                hashes[0].payment_hash_hex.clone()
+            }
+            _ => panic!("unexpected response"),
+        };
+
+        let preimage_res = signer
+            .call(SignerRequest::Node(NodeRequest::GetAsyncPaymentPreimage {
+                host_node_id_hex,
+                hash_index,
+                payment_hash_hex: payment_hash_hex.clone(),
+            }))
+            .expect("get async preimage");
+        let payment_preimage_hex = match preimage_res {
+            SignerResponse::Node(NodeResponse::PaymentPreimage {
+                payment_preimage_hex,
+            }) => payment_preimage_hex,
+            _ => panic!("unexpected response"),
+        };
+        let preimage = hex::decode(payment_preimage_hex).expect("preimage hex");
+        let derived_hash = sha256::Hash::hash(&preimage).to_byte_array();
+
+        assert_eq!(hex::encode(derived_hash), payment_hash_hex);
+    }
+
+    #[test]
     fn channel_generate_keys_id_returns_data() {
         let signer = make_signer();
         let res = signer

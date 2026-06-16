@@ -646,6 +646,86 @@ fn derive_ldk_auxiliary_keys_hex_from_seed(
     Ok((hex::encode(a), hex::encode(b), hex::encode(c)))
 }
 
+#[cfg(any(feature = "with-vls", test))]
+const ASYNC_ORDER_FIRST_HASH_INDEX: u64 = 1;
+#[cfg(any(feature = "with-vls", test))]
+const ASYNC_PAYMENTS_ACCOUNT_INDEX: u32 = 0;
+#[cfg(any(feature = "with-vls", test))]
+const ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX: u32 = 0x7fff_ffff;
+#[cfg(any(feature = "with-vls", test))]
+const ASYNC_PAYMENTS_PREIMAGE_DOMAIN: &[u8] = b"async-payments/v0";
+#[cfg(any(feature = "with-vls", test))]
+const ASYNC_PAYMENTS_PURPOSE_APAY_INDEX: u32 = 0x4150_4159;
+
+#[cfg(any(feature = "with-vls", test))]
+fn derive_async_payments_account_xprv(
+    seed: &[u8; 32],
+    network: bitcoin::Network,
+    host_node_id_hex: &str,
+) -> Result<bitcoin::bip32::Xpriv, VlsAdapterError> {
+    use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+    use bitcoin::secp256k1::PublicKey;
+
+    let host_node_id = PublicKey::from_slice(
+        &hex::decode(host_node_id_hex)
+            .map_err(|e| VlsAdapterError::Protocol(format!("invalid host_node_id hex: {e}")))?,
+    )
+    .map_err(|e| VlsAdapterError::Protocol(format!("invalid host_node_id pubkey: {e}")))?;
+
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let account_xprv = Xpriv::new_master(network, seed).map_err(|e| {
+        VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
+    })?;
+    let h31 = u32::from_be_bytes(
+        bitcoin::hashes::sha256::Hash::hash(&host_node_id.serialize()).to_byte_array()[0..4]
+            .try_into()
+            .expect("sha256 is 32 bytes"),
+    ) & ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX;
+    account_xprv
+        .derive_priv(
+            &secp,
+            &DerivationPath::from(vec![
+                ChildNumber::Hardened {
+                    index: ASYNC_PAYMENTS_PURPOSE_APAY_INDEX,
+                },
+                ChildNumber::Hardened {
+                    index: ASYNC_PAYMENTS_ACCOUNT_INDEX,
+                },
+                ChildNumber::Hardened { index: h31 },
+            ]),
+        )
+        .map_err(|e| {
+            VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
+        })
+}
+
+#[cfg(any(feature = "with-vls", test))]
+fn derive_async_payment_preimage_from_account_xprv(
+    account_xprv: &bitcoin::bip32::Xpriv,
+    hash_index: u64,
+) -> Result<[u8; 32], VlsAdapterError> {
+    use bitcoin::bip32::{ChildNumber, DerivationPath};
+
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let child_xprv = account_xprv
+        .derive_priv(
+            &secp,
+            &DerivationPath::from(vec![ChildNumber::Hardened {
+                index: hash_index as u32,
+            }]),
+        )
+        .map_err(|e| {
+            VlsAdapterError::Protocol(format!("async payment child derivation failed: {e}"))
+        })?;
+    let child_secret = child_xprv.private_key.secret_bytes();
+    let mut preimage_material =
+        Vec::with_capacity(ASYNC_PAYMENTS_PREIMAGE_DOMAIN.len() + child_secret.len());
+    preimage_material.extend_from_slice(ASYNC_PAYMENTS_PREIMAGE_DOMAIN);
+    preimage_material.extend_from_slice(&child_secret);
+    Ok(bitcoin::hashes::sha256::Hash::hash(&preimage_material).to_byte_array())
+}
+
+#[cfg(any(feature = "with-vls", test))]
 fn derive_async_payments_hashes_from_seed(
     seed: &[u8; 32],
     network: bitcoin::Network,
@@ -653,15 +733,6 @@ fn derive_async_payments_hashes_from_seed(
     start_index: u64,
     batch_size: u32,
 ) -> Result<Vec<AsyncPaymentsHashEntry>, VlsAdapterError> {
-    use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
-    use bitcoin::secp256k1::PublicKey;
-
-    const ASYNC_ORDER_FIRST_HASH_INDEX: u64 = 1;
-    const ASYNC_PAYMENTS_ACCOUNT_INDEX: u32 = 0;
-    const ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX: u32 = 0x7fff_ffff;
-    const ASYNC_PAYMENTS_PREIMAGE_DOMAIN: &[u8] = b"async-payments/v0";
-    const ASYNC_PAYMENTS_PURPOSE_APAY_INDEX: u32 = 0x4150_4159;
-
     if start_index < ASYNC_ORDER_FIRST_HASH_INDEX || batch_size == 0 {
         return Err(VlsAdapterError::Protocol(
             "invalid async payments hash batch".to_string(),
@@ -678,56 +749,12 @@ fn derive_async_payments_hashes_from_seed(
         ));
     }
 
-    let host_node_id = PublicKey::from_slice(
-        &hex::decode(host_node_id_hex)
-            .map_err(|e| VlsAdapterError::Protocol(format!("invalid host_node_id hex: {e}")))?,
-    )
-    .map_err(|e| VlsAdapterError::Protocol(format!("invalid host_node_id pubkey: {e}")))?;
-
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    let mut account_xprv = Xpriv::new_master(network, seed).map_err(|e| {
-        VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
-    })?;
-    let h31 = u32::from_be_bytes(
-        bitcoin::hashes::sha256::Hash::hash(&host_node_id.serialize()).to_byte_array()[0..4]
-            .try_into()
-            .expect("sha256 is 32 bytes"),
-    ) & ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX;
-    let account_path = DerivationPath::from(vec![
-        ChildNumber::Hardened {
-            index: ASYNC_PAYMENTS_PURPOSE_APAY_INDEX,
-        },
-        ChildNumber::Hardened {
-            index: ASYNC_PAYMENTS_ACCOUNT_INDEX,
-        },
-        ChildNumber::Hardened { index: h31 },
-    ]);
-    account_xprv = account_xprv
-        .derive_priv(&secp, &account_path)
-        .map_err(|e| {
-            VlsAdapterError::Protocol(format!("async payment root derivation failed: {e}"))
-        })?;
+    let account_xprv = derive_async_payments_account_xprv(seed, network, host_node_id_hex)?;
 
     let mut hashes = Vec::with_capacity(batch_size as usize);
     for hash_index in start_index..=last_index {
-        let child_xprv = account_xprv
-            .derive_priv(
-                &secp,
-                &DerivationPath::from(vec![ChildNumber::Hardened {
-                    index: hash_index as u32,
-                }]),
-            )
-            .map_err(|e| {
-                VlsAdapterError::Protocol(format!("async payment child derivation failed: {e}"))
-            })?;
-        let child_secret = child_xprv.private_key.secret_bytes();
-        let mut preimage_material =
-            Vec::with_capacity(ASYNC_PAYMENTS_PREIMAGE_DOMAIN.len() + child_secret.len());
-        preimage_material.extend_from_slice(ASYNC_PAYMENTS_PREIMAGE_DOMAIN);
-        preimage_material.extend_from_slice(&child_secret);
-        let payment_preimage =
-            bitcoin::hashes::sha256::Hash::hash(&preimage_material).to_byte_array();
-        let payment_hash = bitcoin::hashes::sha256::Hash::hash(&payment_preimage).to_byte_array();
+        let preimage = derive_async_payment_preimage_from_account_xprv(&account_xprv, hash_index)?;
+        let payment_hash = bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array();
         hashes.push(AsyncPaymentsHashEntry {
             hash_index,
             payment_hash_hex: hex::encode(payment_hash),
@@ -735,6 +762,49 @@ fn derive_async_payments_hashes_from_seed(
     }
 
     Ok(hashes)
+}
+
+#[cfg(any(feature = "with-vls", test))]
+fn derive_async_payment_preimage_from_seed(
+    seed: &[u8; 32],
+    network: bitcoin::Network,
+    host_node_id_hex: &str,
+    hash_index: u64,
+) -> Result<[u8; 32], VlsAdapterError> {
+    if hash_index < ASYNC_ORDER_FIRST_HASH_INDEX
+        || hash_index > ASYNC_PAYMENTS_BIP32_MAX_CHILD_INDEX as u64
+    {
+        return Err(VlsAdapterError::Protocol(
+            "invalid async payments hash index".to_string(),
+        ));
+    }
+
+    let account_xprv = derive_async_payments_account_xprv(seed, network, host_node_id_hex)?;
+    derive_async_payment_preimage_from_account_xprv(&account_xprv, hash_index)
+}
+
+#[cfg(any(feature = "with-vls", test))]
+fn validate_and_parse_payment_preimage(
+    payment_preimage_hex: &str,
+    payment_hash_hex: &str,
+) -> Result<[u8; 32], VlsAdapterError> {
+    let preimage: [u8; 32] = hex::decode(payment_preimage_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| VlsAdapterError::Protocol("invalid async payment preimage".to_string()))?;
+    let payment_hash: [u8; 32] = hex::decode(payment_hash_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| {
+            VlsAdapterError::Protocol("invalid async payment payment_hash".to_string())
+        })?;
+    let computed_hash = bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array();
+    if computed_hash != payment_hash {
+        return Err(VlsAdapterError::Protocol(
+            "async payment preimage hash mismatch".to_string(),
+        ));
+    }
+    Ok(preimage)
 }
 
 #[cfg(feature = "with-vls")]
@@ -881,6 +951,12 @@ pub trait VlsClient: Send + Sync {
         start_index: u64,
         batch_size: u32,
     ) -> Result<Vec<AsyncPaymentsHashEntry>, VlsAdapterError>;
+    fn node_get_async_payment_preimage(
+        &self,
+        host_node_id_hex: String,
+        hash_index: u64,
+        payment_hash_hex: String,
+    ) -> Result<String, VlsAdapterError>;
 
     fn node_ecdh(
         &self,
@@ -2226,6 +2302,30 @@ pub mod vls_real {
             )
         }
 
+        fn node_get_async_payment_preimage(
+            &self,
+            host_node_id_hex: String,
+            hash_index: u64,
+            payment_hash_hex: String,
+        ) -> Result<String, VlsAdapterError> {
+            let seed = self.seed.ok_or_else(|| {
+                VlsAdapterError::Protocol(
+                    "RealVlsClient requires Some(seed) in new_with_network_and_seed so async payment preimages can be derived".into(),
+                )
+            })?;
+            let network = Network::from_str(self.network()).map_err(|e| {
+                VlsAdapterError::Protocol(format!("invalid network in adapter: {e}"))
+            })?;
+            let preimage_hex = hex::encode(derive_async_payment_preimage_from_seed(
+                &seed,
+                network,
+                &host_node_id_hex,
+                hash_index,
+            )?);
+            validate_and_parse_payment_preimage(&preimage_hex, &payment_hash_hex)?;
+            Ok(preimage_hex)
+        }
+
         fn node_ecdh(
             &self,
             recipient: String,
@@ -3399,6 +3499,19 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                         SignerResponse::Node(NodeResponse::AsyncPaymentsHashes { hashes })
                     })
                     .map_err(Into::into),
+                NodeRequest::GetAsyncPaymentPreimage {
+                    host_node_id_hex,
+                    hash_index,
+                    payment_hash_hex,
+                } => self
+                    .client
+                    .node_get_async_payment_preimage(host_node_id_hex, hash_index, payment_hash_hex)
+                    .map(|payment_preimage_hex| {
+                        SignerResponse::Node(NodeResponse::PaymentPreimage {
+                            payment_preimage_hex,
+                        })
+                    })
+                    .map_err(Into::into),
                 NodeRequest::Ecdh {
                     recipient,
                     other_key,
@@ -3707,6 +3820,22 @@ mod tests {
             )
         }
 
+        fn node_get_async_payment_preimage(
+            &self,
+            host_node_id_hex: String,
+            hash_index: u64,
+            payment_hash_hex: String,
+        ) -> Result<String, VlsAdapterError> {
+            let preimage_hex = hex::encode(derive_async_payment_preimage_from_seed(
+                &[9u8; 32],
+                bitcoin::Network::Regtest,
+                &host_node_id_hex,
+                hash_index,
+            )?);
+            validate_and_parse_payment_preimage(&preimage_hex, &payment_hash_hex)?;
+            Ok(preimage_hex)
+        }
+
         fn node_ecdh(
             &self,
             _recipient: String,
@@ -3971,5 +4100,34 @@ mod tests {
             )
             .expect("derive child");
         assert_ne!(parent.to_string(), child.to_string());
+    }
+
+    #[test]
+    fn async_payment_preimage_hashes_to_committed_batch_hash() {
+        use bitcoin::hashes::{sha256, Hash as _};
+        use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        let secp = Secp256k1::new();
+        let host = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[7u8; 32]).unwrap());
+        let host_hex = hex::encode(host.serialize());
+        let seed = [3u8; 32];
+        let network = bitcoin::Network::Regtest;
+
+        for index in [1u64, 2, 42, 9999] {
+            let committed_hash =
+                derive_async_payments_hashes_from_seed(&seed, network, &host_hex, index, 1)
+                    .unwrap()[0]
+                    .payment_hash_hex
+                    .clone();
+
+            let preimage =
+                derive_async_payment_preimage_from_seed(&seed, network, &host_hex, index).unwrap();
+            let derived_hash = hex::encode(sha256::Hash::hash(&preimage).to_byte_array());
+
+            assert_eq!(
+                derived_hash, committed_hash,
+                "preimage for index {index} must hash to the committed batch hash"
+            );
+        }
     }
 }
