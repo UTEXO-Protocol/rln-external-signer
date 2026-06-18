@@ -3116,13 +3116,15 @@ pub mod vls_real {
                 let mut psbt_obj = Psbt::deserialize(&psbt_bytes).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid psbt encoding: {e}"))
                 })?;
-                // LDK rejects funding transactions whose absolute locktime is non-final relative
-                // to its best-known height. Normalize generic RGB wallet PSBTs to final form
-                // before signing so channel funding transactions are always acceptable.
-                psbt_obj.unsigned_tx.lock_time = bitcoin::absolute::LockTime::ZERO;
-                for txin in &mut psbt_obj.unsigned_tx.input {
-                    txin.sequence = bitcoin::Sequence::MAX;
-                }
+                // Sign the transaction exactly as built. Do NOT rewrite `lock_time` /
+                // input `sequence` here: doing so changes the txid, and rgb-lib tracks
+                // on-chain RGB transfers (send / create_utxos) by the pre-signing txid
+                // and anchors the RGB commitment to it — mutating the tx makes
+                // `send_end` fail with `UnknownTransfer` and would invalidate the
+                // consignment. Channel-funding finality (LDK's non-final-locktime
+                // rejection) is handled host-side before signing by the RLN node
+                // (`normalize_funding_psbt_locktime`), which adjusts only when needed
+                // and recomputes the funding txid from the signed PSBT.
                 let network = Network::from_str(self.network()).map_err(|e| {
                     VlsAdapterError::Protocol(format!("invalid network in adapter: {e}"))
                 })?;
