@@ -1238,11 +1238,26 @@ pub mod vls_real {
             network: String,
             seed: Option<[u8; 32]>,
         ) -> Self {
+            Self::new_with_network_seed_and_next_dbid(transport, network, seed, 1)
+        }
+
+        /// Like [`Self::new_with_network_and_seed`], but seeds the dbid allocator's starting value
+        /// instead of always starting at 1. Required for callers that persist channel state across a
+        /// process restart: VLS derives each channel's keys from `seed + dbid`, so a dbid must never
+        /// be reused for a given seed — reusing one would make a new channel share an existing
+        /// channel's revocable keys. Restart-safe callers must resume counting from one past the
+        /// highest dbid already in use (e.g. `InProcessVlsTransport::initial_next_dbid`).
+        pub fn new_with_network_seed_and_next_dbid(
+            transport: Arc<dyn Transport>,
+            network: String,
+            seed: Option<[u8; 32]>,
+            next_dbid: u64,
+        ) -> Self {
             Self {
                 transport,
                 network,
                 seed,
-                next_dbid: AtomicU64::new(1),
+                next_dbid: AtomicU64::new(next_dbid),
             }
         }
 
