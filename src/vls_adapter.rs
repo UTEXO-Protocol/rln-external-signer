@@ -1053,9 +1053,7 @@ pub mod vls_real {
     use bitcoin::Txid;
     use bitcoin::{Address, CompressedPublicKey, ScriptBuf};
     use lightning_signer::channel::{ChannelId, CommitmentType};
-    use lightning_signer::lightning::sign::{ChannelSigner as _, SignerProvider};
-    use lightning_signer::signer::my_keys_manager::MyKeysManager;
-    use lightning_signer::signer::{derive::KeyDerivationStyle, ClockStartingTimeFactory};
+    use lightning_signer::signer::derive::KeyDerivationStyle;
     use serde::{Deserialize, Serialize};
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1273,36 +1271,56 @@ pub mod vls_real {
             [0u8; 33]
         }
 
+        /// Synthesize the per-commitment point VLS would produce for `(seed, dbid)` when the
+        /// transport-level `GetPerCommitmentPoint` fails (e.g. a channel restored from LDK
+        /// persistence that the VLS node no longer accepts a point request for).
+        ///
+        /// This MUST reproduce vls-core's own channel-keys derivation for the channel VLS
+        /// registered via `NewChannel { peer_id: default_peer_id, dbid }`, i.e.
+        /// `Node::new_channel` -> `MyKeysManager::get_channel_keys_with_id(CLN-style id)`:
+        /// `channels_seed(seed)` -> `keys_id(channel_id, channels_seed)` (hkdf + LDK masking)
+        /// -> `channel_keys(...)` -> `commitment_seed` -> `build_commitment_secret(idx)`.
+        ///
+        /// The previous implementation passed the raw 41-byte CLN-style nonce to
+        /// `ChannelId::ldk_channel_keys_id()`, which hard-panics on any nonce that is not
+        /// exactly 32 bytes (`copy_from_slice: source slice length (41) does not match
+        /// destination slice length (32)` at vls-core `channel.rs:119`). On a tokio worker
+        /// that panic poisons the LDK `ChannelManager` mutex and bricks the node until
+        /// restart. It also skipped the hkdf `keys_id` step, so even a non-panicking variant
+        /// would have derived points that do not match the real VLS channel.
         fn derive_stub_per_commitment_point(
             &self,
             dbid: u64,
             commitment_number: u64,
         ) -> Result<Option<String>, VlsAdapterError> {
+            use lightning_signer::lightning::ln::chan_utils::build_commitment_secret;
+            use lightning_signer::signer::derive::key_derive;
+
             let Some(seed) = self.seed else {
                 return Ok(None);
             };
             let network = Network::from_str(self.network()).map_err(|e| {
                 VlsAdapterError::Protocol(format!("invalid network in adapter: {e}"))
             })?;
+            let secp = Secp256k1::new();
+            let key_derive = key_derive(KeyDerivationStyle::Ldk, network);
+            let channels_seed = key_derive.channels_seed(&seed);
             let channel_id = ChannelId::new_from_peer_id_and_oid(&Self::default_peer_id(), dbid);
-            let starting_time_factory = ClockStartingTimeFactory {};
-            let manager = MyKeysManager::new(
-                KeyDerivationStyle::Ldk,
-                &seed,
-                network,
-                &starting_time_factory,
-            );
-            let signer = manager.derive_channel_signer(0, channel_id.ldk_channel_keys_id());
-            let point = signer
-                .get_per_commitment_point(
-                    Self::LDK_INITIAL_COMMITMENT_NUMBER.saturating_sub(commitment_number),
-                    &Secp256k1::new(),
+            let keys_id = key_derive.keys_id(channel_id, &channels_seed);
+            let master_key = key_derive.master_key(&seed);
+            let (_, _, _, _, _, commitment_seed) =
+                key_derive.channel_keys(&seed, &keys_id, 0, &master_key, &secp);
+            let idx = Self::LDK_INITIAL_COMMITMENT_NUMBER.saturating_sub(commitment_number);
+            let secret = bitcoin::secp256k1::SecretKey::from_slice(&build_commitment_secret(
+                &commitment_seed,
+                idx,
+            ))
+            .map_err(|_| {
+                VlsAdapterError::Transport(
+                    "failed to synthesize pre-setup commitment point".to_string(),
                 )
-                .map_err(|_| {
-                    VlsAdapterError::Transport(
-                        "failed to synthesize pre-setup commitment point".to_string(),
-                    )
-                })?;
+            })?;
+            let point = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret);
             Ok(Some(hex::encode(point.serialize())))
         }
 
@@ -3314,6 +3332,123 @@ pub mod vls_real {
             self.derive_matches_for_script(&script, max_index)
         }
     }
+
+    #[cfg(test)]
+    mod stub_derivation_tests {
+        use super::*;
+        use lightning_signer::lightning::sign::ChannelSigner as _;
+        use vls_protocol_client::Error as VlsClientError;
+
+        /// Transport that fails every call: `derive_stub_per_commitment_point` must never
+        /// touch the transport, so a panic-free result proves the derivation is local.
+        struct FailingTransport;
+
+        impl Transport for FailingTransport {
+            fn node_call(&self, _message: Vec<u8>) -> Result<Vec<u8>, VlsClientError> {
+                Err(VlsClientError::Transport)
+            }
+
+            fn call(
+                &self,
+                _dbid: u64,
+                _peer_id: PubKey,
+                _message: Vec<u8>,
+            ) -> Result<Vec<u8>, VlsClientError> {
+                Err(VlsClientError::Transport)
+            }
+        }
+
+        /// Regression: the synthesized pre-setup per-commitment point must equal what the VLS
+        /// node derives for the channel registered via `NewChannel { peer_id: [0; 33], dbid }`.
+        ///
+        /// The old implementation panicked before ever producing a point
+        /// (`ChannelId::ldk_channel_keys_id()` on a 41-byte CLN-style nonce:
+        /// `copy_from_slice: source slice length (41) does not match destination slice length
+        /// (32)`), which on a tokio worker poisoned the LDK `ChannelManager` mutex — the
+        /// "restored virtual channel bricks the node on first payment" bug.
+        #[test]
+        fn stub_per_commitment_point_matches_vls_node_derivation() {
+            use lightning_signer::channel::ChannelSlot;
+            use lightning_signer::node::{Node, NodeConfig, NodeServices};
+            use lightning_signer::persist::DummyPersister;
+            use lightning_signer::policy::simple_validator::SimpleValidatorFactory;
+            use lightning_signer::signer::ClockStartingTimeFactory;
+            use lightning_signer::util::clock::StandardClock;
+
+            let seed = [7u8; 32];
+            let network = Network::Regtest;
+
+            // The reference: a real vls-core node, configured exactly like the in-process
+            // signer (LDK key derivation), with the channel VLS would register for this dbid.
+            let config = NodeConfig {
+                network,
+                key_derivation_style: KeyDerivationStyle::Ldk,
+                use_checkpoints: false,
+                allow_deep_reorgs: true,
+            };
+            let services = NodeServices {
+                validator_factory: Arc::new(SimpleValidatorFactory::new()),
+                starting_time_factory: ClockStartingTimeFactory::new(),
+                persister: Arc::new(DummyPersister {}),
+                clock: Arc::new(StandardClock()),
+                trusted_oracle_pubkeys: vec![],
+            };
+            let node = Arc::new(Node::new(config, &seed, vec![], services));
+
+            let client = RealVlsClient::new_with_network_seed_and_next_dbid(
+                Arc::new(FailingTransport),
+                "regtest".to_string(),
+                Some(seed),
+                1,
+            );
+
+            let secp = Secp256k1::new();
+            for dbid in [1u64, 2, 7] {
+                let (_channel_id, slot) = node
+                    .new_channel(dbid, &RealVlsClient::default_peer_id(), &node)
+                    .expect("vls new_channel");
+                let Some(ChannelSlot::Stub(stub)) = slot else {
+                    panic!("expected a channel stub");
+                };
+
+                // Compare a few commitment indices, including 0 (the pre-setup point LDK asks
+                // for on fresh opens) and advanced ones (what a restored channel needs).
+                for ldk_idx in [0u64, 1, 2, 5] {
+                    let expected = stub
+                        .keys
+                        .get_per_commitment_point(ldk_idx, &secp)
+                        .expect("vls stub point");
+                    let commitment_number =
+                        RealVlsClient::LDK_INITIAL_COMMITMENT_NUMBER.saturating_sub(ldk_idx);
+                    let synthesized = client
+                        .derive_stub_per_commitment_point(dbid, commitment_number)
+                        .expect("synthesized point")
+                        .expect("seed is set, point must be produced");
+                    assert_eq!(
+                        synthesized,
+                        hex::encode(expected.serialize()),
+                        "synthesized pre-setup point must match the VLS node derivation \
+                         (dbid={dbid}, ldk_idx={ldk_idx})"
+                    );
+                }
+            }
+        }
+
+        /// The synthesized fallback must be a no-op (not a panic) when no seed is configured.
+        #[test]
+        fn stub_per_commitment_point_without_seed_is_none() {
+            let client = RealVlsClient::new_with_network_seed_and_next_dbid(
+                Arc::new(FailingTransport),
+                "regtest".to_string(),
+                None,
+                1,
+            );
+            let result = client
+                .derive_stub_per_commitment_point(1, RealVlsClient::LDK_INITIAL_COMMITMENT_NUMBER)
+                .expect("must not error");
+            assert!(result.is_none());
+        }
+    }
 }
 
 pub struct VlsSignerAdapter<C: VlsClient> {
@@ -3671,6 +3806,8 @@ impl<C: VlsClient> ExternalSignerBackend for VlsSignerAdapter<C> {
                 .map_err(Into::into),
         }
     }
+
+
 }
 
 #[cfg(test)]
